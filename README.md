@@ -1,4 +1,4 @@
-<h1  align="center"><samp> Hi there 👋🏾  welcome to my Github! I'm a Man  </samp></h1>
+<h1  align="center"><samp> Hi there 👋🏾  welcome to my Github! I'm Man  </samp></h1>
  
  </br>
 </br>
