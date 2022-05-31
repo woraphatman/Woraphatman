@@ -18,7 +18,7 @@
 </br></br>
 
 <h1 align="center" > 
-  Visitor count<br>
+  Visitor count
   <img src="https://profile-counter.glitch.me/woraphatman/count.svg" />
 </h1>
 </br>
