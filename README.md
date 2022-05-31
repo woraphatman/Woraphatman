@@ -15,11 +15,11 @@
 <img  src="https://github-readme-stats.vercel.app/api?username=woraphatman&&show_icons=true&theme=radical"/>
   </a>
   </p>
+</br></br>
 
-
-<p align="center"> 
+<h1 align="center" > 
   Visitor count<br>
   <img src="https://profile-counter.glitch.me/woraphatman/count.svg" />
-</p>
+</h1>
 </br>
 </br>
