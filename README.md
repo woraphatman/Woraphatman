@@ -15,7 +15,7 @@
 <img  src="https://github-readme-stats.vercel.app/api?username=woraphatman&&show_icons=true&theme=radical"/>
   </a>
   </p>
-</br></br>
+</br>
 
 <h1 align="center" > 
   Visitor count
@@ -24,4 +24,4 @@
 </h1>
 </br>
 </br>
-</br>
+
