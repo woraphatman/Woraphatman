@@ -8,14 +8,6 @@
 </p>
 
 </br>
-</br>
-
-<p align="center" >  
-  <a href="https://github.com/woraphatman/github-readme-stats"> 
-<img  src="https://github-readme-stats.vercel.app/api?username=woraphatman&&show_icons=true&theme=radical"/>
-  </a>
-  </p>
-</br>
 
 </br>
 </br>
