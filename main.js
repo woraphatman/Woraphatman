@@ -3,22 +3,38 @@
 //   index.html?still=1        progressive-accumulation still; sets window.__ready when the frame is final.
 //                             Pose = the calm end of the loop, or the exact frame at &t=<seconds into the loop>.
 //   &theme=day|night          &view=hero|keys|oled  camera preset     &samples=N  accumulation samples     &pr=N  pixel ratio
+//   &profile=ci               cost preset for GPU-less CI runners (fewer samples, smaller shadow map); &shadow=N overrides the shadow map size
 //   window.__renderAt(t)      (still mode) re-render the frame at time t without reloading; used by capture-anim.mjs
+//   window.__poseKeyAt(t)     (still mode) fingerprint of the frame at time t; equal fingerprints render identical frames
 import * as THREE from 'three';
 import { buildKeyboard } from './src/keyboard.js';
-import { buildEnvironment, buildGround, buildLights, buildUnderglow } from './src/stage.js';
+import { buildEnvironment, buildGround, buildLights, buildUnderglow, SHADOW_HALF_EXTENT, SHADOW_RADIUS } from './src/stage.js';
 import { Pipeline } from './src/post.js';
 import { VIEWS, placeCamera, halton, jitterCamera } from './src/camera.js';
 import { themeById } from './src/theme.js';
-import { restTime } from './src/timeline.js';
+import { poseKey, restTime } from './src/timeline.js';
 
 const params = new URLSearchParams(location.search);
 const STILL = params.get('still') === '1';
 const THEME = themeById(params.get('theme'));
 const VIEW = VIEWS[params.get('view')] ?? VIEWS.hero;
-const SAMPLES = Number(params.get('samples') ?? 160);
-const PIXEL_RATIO = Number(params.get('pr') ?? Math.min(window.devicePixelRatio || 1, STILL ? 3 : 2));
 const num = (key, fallback) => (params.has(key) ? Number(params.get(key)) : fallback);
+
+// Cost presets. Light samples come in cycles of CYCLE: keyPerCycle tight key-light samples and the rest soft sky-dome
+// samples. The per-sample intensity compensation (1 / share) only averages out to the right brightness over whole cycles,
+// so `samples` must be a multiple of CYCLE. domeBlur widens the PCF filter of the dome samples' shadows on the desk (world
+// units, 0 = off): with few samples the stepped copies of a soft shadow melt into one gradient.
+const CYCLE = 8;
+const PROFILES = {
+  default: { samples: 160, shadowMap: 4096, keyPerCycle: 5, domeBlur: 0 },
+  ci: { samples: 24, shadowMap: 1024, keyPerCycle: 3, domeBlur: 0.16 },
+};
+const PROFILE = PROFILES[params.get('profile')] ?? PROFILES.default;
+const SAMPLES = num('samples', PROFILE.samples);
+const SHADOW_MAP = num('shadow', PROFILE.shadowMap);
+const KEY_PER_CYCLE = num('keys', PROFILE.keyPerCycle);
+const DOME_BLUR = num('domeblur', PROFILE.domeBlur);
+const PIXEL_RATIO = Number(params.get('pr') ?? Math.min(window.devicePixelRatio || 1, STILL ? 3 : 2));
 const TUNE = { // quick look-dev overrides, e.g. &exp=0.8&bloom=0.3&ap=0&env=0.5&key=2&grain=0.5
   exposure: num('exp', THEME.exposure),
   bloom: num('bloom', 0),
@@ -29,7 +45,7 @@ const TUNE = { // quick look-dev overrides, e.g. &exp=0.8&bloom=0.3&ap=0&env=0.5
   grain: num('grain', THEME.backdrop.grain * 255) / 255, // in 1/255 steps
 };
 
-const KEY_SAMPLE_SHARE = 5 / 8; // share of accumulation samples that use the tight key light (rest = soft sky dome)
+const KEY_SAMPLE_SHARE = KEY_PER_CYCLE / CYCLE; // share of accumulation samples that use the tight key light (rest = soft sky dome)
 const KEY_DIR = new THREE.Vector3(-0.62, 0.78, 0.3).normalize();
 const KEY_SOFTNESS = Math.tan((7 * Math.PI) / 180);
 const LIGHT_DISTANCE = 34;
@@ -73,7 +89,7 @@ function buildScene(renderer, data) {
   const ground = buildGround(footprint, THEME);
   scene.add(ground.group);
 
-  const { sun } = buildLights(scene, THEME);
+  const { sun } = buildLights(scene, THEME, { shadowMap: SHADOW_MAP });
   const underglow = buildUnderglow(footprint, THEME);
   if (underglow) scene.add(underglow);
   return { scene, keyboard, ground, sun, box };
@@ -99,8 +115,10 @@ function liveLoop(ctx, renderer, pipeline, camera, t0) {
 
 /** Jitter the sun between a tight key light and a wide soft dome, so accumulated shadows get real penumbrae and contact occlusion. */
 function sampleLights(ctx, i) {
-  const isKey = i % 8 < 5;
-  const k = isKey ? Math.floor(i / 8) * 5 + (i % 8) : Math.floor(i / 8) * 3 + (i % 8) - 5;
+  const slot = i % CYCLE;
+  const isKey = slot < KEY_PER_CYCLE;
+  const cycle = Math.floor(i / CYCLE);
+  const k = isKey ? cycle * KEY_PER_CYCLE + slot : cycle * (CYCLE - KEY_PER_CYCLE) + slot - KEY_PER_CYCLE;
   const u1 = halton(k, 2);
   const u2 = halton(k, 3);
   const dir = new THREE.Vector3();
@@ -130,6 +148,8 @@ function sampleLights(ctx, i) {
   ctx.sun.intensity = intensity;
   ctx.sun.color.set(colour);
   ctx.ground.shadowMat.opacity = Math.min(opacity, 1);
+  const texel = (2 * SHADOW_HALF_EXTENT) / SHADOW_MAP; // world units
+  ctx.ground.shadowBlur.value = isKey || DOME_BLUR === 0 ? 1 : Math.max(1, DOME_BLUR / texel / SHADOW_RADIUS);
 }
 
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
@@ -222,6 +242,7 @@ async function main() {
       stillT = t;
       return renderStill(ctx, renderer, pipeline, camera, t, true);
     };
+    window.__poseKeyAt = (t) => poseKey(timeline, ctx.keyboard.keys.length, t);
     await renderStill(ctx, renderer, pipeline, camera, stillT, explicitT);
   } else {
     liveLoop(ctx, renderer, pipeline, camera, performance.now());

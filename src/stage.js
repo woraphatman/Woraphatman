@@ -46,12 +46,31 @@ function blobTexture({ width, depth, pad, radius, blur, color = 'rgba(0,0,0,1)',
 }
 
 /**
+ * A ShadowMaterial whose PCF filter radius is scaled by the returned `blur` uniform (1 = the light's own radius).
+ * Soft sky-dome shadows on the desk need a wide filter to melt into a gradient when few light samples are accumulated,
+ * while the shadows the keys cast on the case must stay crisp, so only the desk gets it.
+ */
+function blurrableShadowMaterial(params) {
+  const material = new THREE.ShadowMaterial(params);
+  const blur = { value: 1 };
+  const chunk = THREE.ShaderChunk.shadowmask_pars_fragment;
+  const wide = chunk.replaceAll('directionalLight.shadowRadius', 'directionalLight.shadowRadius * uShadowBlur');
+  if (wide === chunk) throw new Error('three.js shadow chunk changed: cannot widen the desk shadow filter');
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uShadowBlur = blur;
+    shader.fragmentShader = `uniform float uShadowBlur;
+${shader.fragmentShader.replace('#include <shadowmask_pars_fragment>', wide)}`;
+  };
+  return { material, blur };
+}
+
+/**
  * Ground that only draws shadows (the backdrop itself is composited in the final pass),
  * plus two baked contact-shadow layers hugging the case.
  */
 export function buildGround(footprint, theme) {
   const group = new THREE.Group();
-  const shadowMat = new THREE.ShadowMaterial({ color: new THREE.Color(theme.shadowColor), opacity: 0.4, transparent: true });
+  const { material: shadowMat, blur: shadowBlur } = blurrableShadowMaterial({ color: new THREE.Color(theme.shadowColor), opacity: 0.4, transparent: true });
   const plane = new THREE.Mesh(new THREE.PlaneGeometry(140, 140), shadowMat);
   plane.rotation.x = -Math.PI / 2;
   plane.receiveShadow = true;
@@ -71,23 +90,26 @@ export function buildGround(footprint, theme) {
     mesh.position.set(footprint.cx + l.offset[0], l.y, footprint.cz + l.offset[1]);
     group.add(mesh);
   }
-  return { group, shadowMat };
+  return { group, shadowMat, shadowBlur };
 }
 
-export function buildLights(scene, theme) {
+export const SHADOW_HALF_EXTENT = 13; // half the width of the sun's orthographic shadow frustum, in world units
+export const SHADOW_RADIUS = 1.5; // PCF filter radius in shadow-map texels
+
+export function buildLights(scene, theme, { shadowMap = 4096 } = {}) {
   const sun = new THREE.DirectionalLight(theme.key.color, 3);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(4096, 4096);
+  sun.shadow.mapSize.set(shadowMap, shadowMap);
   const cam = sun.shadow.camera;
-  cam.left = -13;
-  cam.right = 13;
-  cam.top = 13;
-  cam.bottom = -13;
+  cam.left = -SHADOW_HALF_EXTENT;
+  cam.right = SHADOW_HALF_EXTENT;
+  cam.top = SHADOW_HALF_EXTENT;
+  cam.bottom = -SHADOW_HALF_EXTENT;
   cam.near = 2;
   cam.far = 70;
   sun.shadow.bias = -0.0003;
   sun.shadow.normalBias = 0.025;
-  sun.shadow.radius = 1.5;
+  sun.shadow.radius = SHADOW_RADIUS;
   scene.add(sun, sun.target);
 
   let rim = null;

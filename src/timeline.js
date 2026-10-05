@@ -99,5 +99,11 @@ export function todayFlash(tl, t) {
 /** 1 while the live dot is lit, 0 while it is dark. */
 export const liveDot = (tl, t) => (Math.floor(wrap(t, tl.loop) / (tl.blinkPeriod / 2)) % 2 === 0 ? 1 : 0);
 
+/** Fingerprint of everything that moves at time t (key depths, today's glow, status dot): equal fingerprints render identical frames. */
+export function poseKey(tl, keyCount, t, blink = true) {
+  const depths = Array.from({ length: keyCount }, (_, i) => keyDepth(tl, i, t).toFixed(6)).join(',');
+  return `${depths}|${todayFlash(tl, t).toFixed(6)}|${blink ? liveDot(tl, t) : 1}`;
+}
+
 /** A calm moment (all keys home, glow at rest) for still images. */
 export const restTime = (tl) => tl.loop - TIMING.rest / 2;
