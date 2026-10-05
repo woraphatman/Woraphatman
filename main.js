@@ -1,0 +1,235 @@
+// GitHub profile banner: a 3D keyboard whose keys are the contribution calendar.
+//   index.html                live, animated: the keys press down lightest -> darkest, spring back, today's key flashes
+//   index.html?still=1        progressive-accumulation still; sets window.__ready when the frame is final.
+//                             Pose = the calm end of the loop, or the exact frame at &t=<seconds into the loop>.
+//   &theme=day|night          &view=hero|keys|oled  camera preset     &samples=N  accumulation samples     &pr=N  pixel ratio
+//   window.__renderAt(t)      (still mode) re-render the frame at time t without reloading; used by capture-anim.mjs
+import * as THREE from 'three';
+import { buildKeyboard } from './src/keyboard.js';
+import { buildEnvironment, buildGround, buildLights, buildUnderglow } from './src/stage.js';
+import { Pipeline } from './src/post.js';
+import { VIEWS, placeCamera, halton, jitterCamera } from './src/camera.js';
+import { themeById } from './src/theme.js';
+import { restTime } from './src/timeline.js';
+
+const params = new URLSearchParams(location.search);
+const STILL = params.get('still') === '1';
+const THEME = themeById(params.get('theme'));
+const VIEW = VIEWS[params.get('view')] ?? VIEWS.hero;
+const SAMPLES = Number(params.get('samples') ?? 160);
+const PIXEL_RATIO = Number(params.get('pr') ?? Math.min(window.devicePixelRatio || 1, STILL ? 3 : 2));
+const num = (key, fallback) => (params.has(key) ? Number(params.get(key)) : fallback);
+const TUNE = { // quick look-dev overrides, e.g. &exp=0.8&bloom=0.3&ap=0&env=0.5&key=2&grain=0.5
+  exposure: num('exp', THEME.exposure),
+  bloom: num('bloom', 0),
+  aperture: num('ap', VIEW.aperture ?? 0),
+  env: num('env', THEME.env.intensity),
+  key: num('key', THEME.key.intensity),
+  dome: num('dome', THEME.dome.intensity),
+  grain: num('grain', THEME.backdrop.grain * 255) / 255, // in 1/255 steps
+};
+
+const KEY_SAMPLE_SHARE = 5 / 8; // share of accumulation samples that use the tight key light (rest = soft sky dome)
+const KEY_DIR = new THREE.Vector3(-0.62, 0.78, 0.3).normalize();
+const KEY_SOFTNESS = Math.tan((7 * Math.PI) / 180);
+const LIGHT_DISTANCE = 34;
+
+async function loadData() {
+  const res = await fetch('data.json', { cache: 'no-store' });
+  if (!res.ok) throw new Error(`data.json: ${res.status}`);
+  return res.json();
+}
+
+function createRenderer() {
+  const renderer = new THREE.WebGLRenderer({
+    antialias: false,
+    alpha: false,
+    powerPreference: 'high-performance',
+    preserveDrawingBuffer: STILL,
+  });
+  renderer.setPixelRatio(PIXEL_RATIO);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.NeutralToneMapping; // applied in the final composite pass (see src/post.js)
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
+  document.body.appendChild(renderer.domElement);
+  return renderer;
+}
+
+function buildScene(renderer, data) {
+  const scene = new THREE.Scene();
+  scene.environment = buildEnvironment(renderer, THEME.env.boxes);
+  scene.environmentIntensity = TUNE.env;
+  scene.environmentRotation.y = 0.35;
+
+  const keyboard = buildKeyboard(data, THEME);
+  scene.add(keyboard.root);
+
+  const box = new THREE.Box3().setFromObject(keyboard.caseMesh);
+  const size = box.getSize(new THREE.Vector3());
+  const centre = box.getCenter(new THREE.Vector3());
+  const footprint = { width: size.x - 0.5, depth: size.z - 0.4, cx: centre.x, cz: centre.z };
+  const ground = buildGround(footprint, THEME);
+  scene.add(ground.group);
+
+  const { sun } = buildLights(scene, THEME);
+  const underglow = buildUnderglow(footprint, THEME);
+  if (underglow) scene.add(underglow);
+  return { scene, keyboard, ground, sun, box };
+}
+
+function liveLoop(ctx, renderer, pipeline, camera, t0) {
+  renderer.setAnimationLoop((now) => {
+    const t = (now - t0) / 1000;
+    ctx.keyboard.update(t);
+    placeCamera(camera, VIEW, window.innerWidth / window.innerHeight, {
+      az: 2.2 * Math.sin(t * 0.17),
+      el: 0.8 * Math.sin(t * 0.11 + 1.2),
+      dist: 0.25 * Math.sin(t * 0.09),
+    });
+    ctx.sun.position.copy(KEY_DIR).multiplyScalar(LIGHT_DISTANCE);
+    ctx.sun.target.position.set(0, 0, 0);
+    ctx.sun.color.set(THEME.key.color);
+    ctx.sun.intensity = TUNE.key;
+    pipeline.setCamera(camera);
+    pipeline.renderLive(ctx.scene, camera, Math.floor(now / 16));
+  });
+}
+
+/** Jitter the sun between a tight key light and a wide soft dome, so accumulated shadows get real penumbrae and contact occlusion. */
+function sampleLights(ctx, i) {
+  const isKey = i % 8 < 5;
+  const k = isKey ? Math.floor(i / 8) * 5 + (i % 8) : Math.floor(i / 8) * 3 + (i % 8) - 5;
+  const u1 = halton(k, 2);
+  const u2 = halton(k, 3);
+  const dir = new THREE.Vector3();
+  let intensity;
+  let opacity;
+  let colour;
+  if (isKey) {
+    const e1 = new THREE.Vector3().crossVectors(KEY_DIR, new THREE.Vector3(0, 1, 0)).normalize();
+    const e2 = new THREE.Vector3().crossVectors(KEY_DIR, e1).normalize();
+    const r = KEY_SOFTNESS * Math.sqrt(u1);
+    const a = 2 * Math.PI * u2;
+    dir.copy(KEY_DIR).addScaledVector(e1, r * Math.cos(a)).addScaledVector(e2, r * Math.sin(a)).normalize();
+    intensity = TUNE.key / KEY_SAMPLE_SHARE;
+    opacity = THEME.key.shadow / KEY_SAMPLE_SHARE;
+    colour = THEME.key.color;
+  } else {
+    const maxZenith = Math.sin((72 * Math.PI) / 180);
+    const s = Math.sqrt(u1) * maxZenith;
+    const phi = 2 * Math.PI * u2;
+    dir.set(s * Math.cos(phi), Math.sqrt(1 - s * s), s * Math.sin(phi));
+    intensity = TUNE.dome / (1 - KEY_SAMPLE_SHARE);
+    opacity = THEME.dome.shadow / (1 - KEY_SAMPLE_SHARE);
+    colour = THEME.dome.color;
+  }
+  ctx.sun.position.copy(dir).multiplyScalar(LIGHT_DISTANCE);
+  ctx.sun.target.position.set(0, 0, 0);
+  ctx.sun.intensity = intensity;
+  ctx.sun.color.set(colour);
+  ctx.ground.shadowMat.opacity = Math.min(opacity, 1);
+}
+
+const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
+
+/**
+ * Render one final frame by accumulating SAMPLES jittered renders (sub-pixel AA, lens DOF, soft sun).
+ * @param {number} t seconds into the animation loop
+ * @param {boolean} blink whether the OLED status dot follows the loop (false = lit)
+ */
+async function renderStill(ctx, renderer, pipeline, camera, t, blink) {
+  const t0 = performance.now();
+  const aspect = window.innerWidth / window.innerHeight;
+  placeCamera(camera, VIEW, aspect);
+  ctx.keyboard.update(t, { blink });
+
+  const base = {
+    projection: camera.projectionMatrix.clone(),
+    position: camera.position.clone(),
+    quaternion: camera.quaternion.clone(),
+  };
+  const focus = new THREE.Vector3(...VIEW.target);
+  const focusDist = camera.position.distanceTo(focus);
+  const { width, height } = renderer.getDrawingBufferSize(new THREE.Vector2());
+
+  pipeline.beginAccumulation();
+  const weight = 1 / SAMPLES;
+  for (let i = 0; i < SAMPLES; i += 1) {
+    sampleLights(ctx, i);
+    const a = 2 * Math.PI * halton(i, 5);
+    const r = Math.sqrt(halton(i, 7));
+    jitterCamera(camera, base, {
+      px: halton(i, 2) - 0.5,
+      py: halton(i, 3) - 0.5,
+      lensX: r * Math.cos(a),
+      lensY: r * Math.sin(a),
+      aperture: TUNE.aperture,
+      focusDist,
+      width,
+      height,
+    });
+    pipeline.accumulate(ctx.scene, camera, weight);
+    if (i % 6 === 5) {
+      renderer.getContext().finish();
+      await nextFrame();
+    }
+  }
+  camera.projectionMatrix.copy(base.projection);
+  camera.projectionMatrixInverse.copy(base.projection).invert();
+  camera.position.copy(base.position);
+  camera.quaternion.copy(base.quaternion);
+  camera.updateMatrixWorld(true);
+  pipeline.setCamera(camera);
+  pipeline.finishAccumulation(7);
+  renderer.getContext().finish();
+  window.__stats = { samples: SAMPLES, ms: Math.round(performance.now() - t0), width, height, t };
+  window.__ready = true;
+  return window.__stats;
+}
+
+async function main() {
+  const data = await loadData();
+  const renderer = createRenderer();
+  document.documentElement.style.setProperty('--page', THEME.page);
+  const ctx = buildScene(renderer, data);
+  const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+  const pipeline = new Pipeline(renderer, { width: size.x, height: size.y, msaa: STILL ? 0 : 4, backdrop: THEME.backdrop });
+  pipeline.exposure = TUNE.exposure;
+  pipeline.bloom.strength = TUNE.bloom;
+  pipeline.grain = TUNE.grain;
+  if (THEME.underglow) pipeline.setFloorGlow({ box: ctx.box, ...THEME.underglow.desk });
+  const camera = new THREE.PerspectiveCamera();
+  placeCamera(camera, VIEW, window.innerWidth / window.innerHeight);
+  pipeline.setCamera(camera);
+
+  const { timeline } = ctx.keyboard;
+  window.__timeline = { loop: timeline.loop, keys: timeline.order.length, step: timeline.step, blinkPeriod: timeline.blinkPeriod };
+  const explicitT = params.has('t');
+  let stillT = explicitT ? Number(params.get('t')) : restTime(timeline);
+
+  window.addEventListener('resize', () => {
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    const s = renderer.getDrawingBufferSize(new THREE.Vector2());
+    pipeline.setSize(s.x, s.y);
+    placeCamera(camera, VIEW, window.innerWidth / window.innerHeight);
+    if (STILL) renderStill(ctx, renderer, pipeline, camera, stillT, explicitT);
+  });
+
+  if (STILL) {
+    window.__renderAt = (t) => {
+      stillT = t;
+      return renderStill(ctx, renderer, pipeline, camera, t, true);
+    };
+    await renderStill(ctx, renderer, pipeline, camera, stillT, explicitT);
+  } else {
+    liveLoop(ctx, renderer, pipeline, camera, performance.now());
+  }
+  window.__scene = { ctx, renderer, pipeline, camera, THREE };
+}
+
+main().catch((err) => {
+  console.error(err);
+  window.__error = String(err?.stack ?? err);
+});

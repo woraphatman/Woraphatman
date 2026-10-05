@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nobxx profile keyboard</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: var(--page, #FAF4E6); }
+    canvas { display: block; }
+  </style>
+  <script>
+    // paint the page in the theme colour before the canvas exists (night = GitHub dark)
+    if (new URLSearchParams(location.search).get('theme') === 'night') document.documentElement.style.setProperty('--page', '#0d1117');
+  </script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
