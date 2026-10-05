@@ -1,2 +1,4 @@
 node_modules/
-out/_scratch/
+out/
+dist/
+published-data.json
