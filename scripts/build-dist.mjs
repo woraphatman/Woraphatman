@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const MAX_GIF_BYTES = 5 * 1048576; // GitHub's README image proxy gives up on larger files
+const MAX_GIF_BYTES = 5 * 1048576; // fail the build rather than publish a README image this heavy
 const GIFS = ['banner-day.gif', 'banner-night.gif'];
 const SITE = ['index.html', 'main.js', 'data.json', 'src'];
 
