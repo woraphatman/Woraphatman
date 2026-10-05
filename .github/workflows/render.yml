@@ -7,6 +7,21 @@
 name: Render banner
 
 on:
+  schedule:
+    - cron: '17 * * * *' # hourly, off the busy minute; skips the render when the data is unchanged
+  push:
+    branches: [master]
+    paths: # render code only: README, docs and tests do not change the picture
+      - index.html
+      - main.js
+      - src/**
+      - capture-anim.mjs
+      - capture-lib.mjs
+      - fetch_data.mjs
+      - scripts/**
+      - package.json
+      - package-lock.json
+      - .github/workflows/render.yml
   workflow_dispatch:
     inputs:
       probe:
