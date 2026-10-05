@@ -88,8 +88,8 @@ const COMMON_FLAGS = [
 
 /**
  * Chrome flags per GL backend. `swiftshader` is the CPU rasteriser a GPU-less CI runner falls back to.
- * `mesa` (llvmpipe through desktop GL, needs a display such as xvfb) and `lavapipe` (llvmpipe through Vulkan) are the other CPU
- * rasterisers a Linux runner can offer; they are only worth using if they beat SwiftShader there.
+ * `mesa` is Mesa's llvmpipe through desktop GL (needs a display such as xvfb): the CI renders with it, about 5x faster than
+ * SwiftShader on a 4-vCPU runner. `lavapipe` is llvmpipe through Vulkan, about as fast.
  */
 export function glFlags(gl) {
   if (gl === 'swiftshader') return ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'];

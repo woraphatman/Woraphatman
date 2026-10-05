@@ -52,6 +52,8 @@ jobs:
   prepare:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read # only publish writes
     outputs:
       render: ${{ steps.skip.outputs.render }}
     steps:
@@ -98,6 +100,8 @@ jobs:
     if: ${{ needs.prepare.outputs.render == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    permissions:
+      contents: read # runs npm ci and a browser: no write access needed
     strategy:
       matrix:
         theme: [day, night]
