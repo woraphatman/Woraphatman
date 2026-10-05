@@ -29,7 +29,7 @@ const num = (key, fallback) => (params.has(key) ? Number(params.get(key)) : fall
 const CYCLE = 8;
 const PROFILES = {
   default: { samples: 160, shadowMap: 4096, keyPerCycle: 5, domeBlur: 0 },
-  ci: { samples: 24, shadowMap: 1024, keyPerCycle: 3, domeBlur: 0.16 },
+  ci: { samples: 32, shadowMap: 1024, keyPerCycle: 3, domeBlur: 0.16 },
 };
 const PROFILE = PROFILES[params.get('profile')] ?? PROFILES.default;
 const SAMPLES = num('samples', PROFILE.samples);
