@@ -1,12 +1,11 @@
 {
  "login": "woraphatman",
- "yearTotal": 387,
- "todayCount": 3,
- "openPRs": 2,
- "repoCount": 23,
+ "yearTotal": 392,
+ "todayCount": 8,
+ "weekTotal": 75,
  "currentStreak": 2,
  "asOf": "2026-10-05",
- "generatedAt": "2026-10-05T09:53:04.026Z",
+ "generatedAt": "2026-10-05T15:06:23.454Z",
  "days": [
   {
    "date": "2025-10-05",
@@ -1470,7 +1469,7 @@
   },
   {
    "date": "2026-10-05",
-   "count": 3
+   "count": 8
   }
  ]
 }
