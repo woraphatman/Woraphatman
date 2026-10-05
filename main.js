@@ -1,5 +1,6 @@
 // GitHub profile banner: a 3D keyboard whose keys are the contribution calendar.
-//   index.html                live, animated: the keys press down lightest -> darkest, spring back, today's key flashes
+//   index.html                live, animated: the keys press down lightest -> darkest, spring back, today's key flashes; drag to spin the view
+//                             (no &theme: follows the visitor's light/dark setting)
 //   index.html?still=1        progressive-accumulation still; sets window.__ready when the frame is final.
 //                             Pose = the calm end of the loop, or the exact frame at &t=<seconds into the loop>.
 //   &theme=day|night          &view=hero|keys|oled  camera preset     &samples=N  accumulation samples     &pr=N  pixel ratio
@@ -13,10 +14,11 @@ import { Pipeline } from './src/post.js';
 import { VIEWS, placeCamera, halton, jitterCamera } from './src/camera.js';
 import { themeById } from './src/theme.js';
 import { poseKey, restTime } from './src/timeline.js';
+import { attachOrbit } from './src/orbit.js';
 
 const params = new URLSearchParams(location.search);
 const STILL = params.get('still') === '1';
-const THEME = themeById(params.get('theme'));
+const THEME = themeById(params.get('theme') ?? (!STILL && matchMedia('(prefers-color-scheme: dark)').matches ? 'night' : 'day')); // the live page follows the visitor's colour scheme
 const VIEW = VIEWS[params.get('view')] ?? VIEWS.hero;
 const num = (key, fallback) => (params.has(key) ? Number(params.get(key)) : fallback);
 
@@ -95,13 +97,34 @@ function buildScene(renderer, data) {
   return { scene, keyboard, ground, sun, box };
 }
 
+/** A one-line hint at the bottom of the live page; returns the function that fades it out. */
+function showHint() {
+  const hint = document.createElement('p');
+  hint.textContent = 'Drag to spin · double-click to reset';
+  Object.assign(hint.style, {
+    position: 'fixed', left: 0, right: 0, bottom: '14px', margin: 0, textAlign: 'center', pointerEvents: 'none', transition: 'opacity 0.6s',
+    font: '13px/1.4 system-ui, sans-serif', letterSpacing: '0.02em', color: THEME.id === 'night' ? 'rgba(230,237,243,0.62)' : 'rgba(35,28,16,0.55)',
+  });
+  document.body.appendChild(hint);
+  return () => {
+    hint.style.opacity = '0';
+    setTimeout(() => hint.remove(), 700);
+  };
+}
+
 function liveLoop(ctx, renderer, pipeline, camera, t0) {
+  const hideHint = showHint();
+  setTimeout(hideHint, 7000);
+  const orbit = attachOrbit(renderer.domElement, hideHint);
+  let last = t0;
   renderer.setAnimationLoop((now) => {
     const t = (now - t0) / 1000;
+    orbit.update((now - last) / 1000);
+    last = now;
     ctx.keyboard.update(t);
     placeCamera(camera, VIEW, window.innerWidth / window.innerHeight, {
-      az: 2.2 * Math.sin(t * 0.17),
-      el: 0.8 * Math.sin(t * 0.11 + 1.2),
+      az: 2.2 * Math.sin(t * 0.17) + orbit.state.az,
+      el: 0.8 * Math.sin(t * 0.11 + 1.2) + orbit.state.el,
       dist: 0.25 * Math.sin(t * 0.09),
     });
     ctx.sun.position.copy(KEY_DIR).multiplyScalar(LIGHT_DISTANCE);

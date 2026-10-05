@@ -4,13 +4,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Nobxx profile keyboard</title>
+  <link rel="icon" href="data:,">
   <style>
     html, body { margin: 0; height: 100%; overflow: hidden; background: var(--page, #FAF4E6); }
     canvas { display: block; }
   </style>
   <script>
-    // paint the page in the theme colour before the canvas exists (night = GitHub dark)
-    if (new URLSearchParams(location.search).get('theme') === 'night') document.documentElement.style.setProperty('--page', '#0d1117');
+    // paint the page in the theme colour before the canvas exists (night = GitHub dark); without &theme the live page follows the visitor's setting
+    (() => {
+      const q = new URLSearchParams(location.search);
+      const theme = q.get('theme') ?? (q.get('still') !== '1' && matchMedia('(prefers-color-scheme: dark)').matches ? 'night' : 'day');
+      if (theme === 'night') document.documentElement.style.setProperty('--page', '#0d1117');
+    })();
   </script>
   <script type="importmap">
     {
