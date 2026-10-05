@@ -1,0 +1,117 @@
+# Renders the profile banner (two looping GIFs of the keyboard animation, drawn by software GL on the runner) and
+# force-pushes it, with the live page and data.json, as the orphan `output` branch that README.md and GitHub Pages read.
+name: Render banner
+
+on:
+  workflow_dispatch:
+    inputs:
+      probe:
+        description: 'Timing probe: render only this many distinct frames, print timings and stop without publishing (0 = full run)'
+        type: number
+        default: 0
+      samples:
+        description: 'Accumulation samples per frame (0 = the CI profile default)'
+        type: number
+        default: 0
+
+permissions:
+  contents: write
+
+concurrency:
+  group: render-banner
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Bangkok # the OLED shows "updated HH:MM" in the owner's time zone
+  OWNER: ${{ github.repository_owner }}
+
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PROBE: ${{ inputs.probe }}
+      SAMPLES: ${{ inputs.samples }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Fetch contribution data
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node fetch_data.mjs
+
+      - name: Test
+        run: npm test
+
+      - name: Look up the published data
+        run: |
+          git fetch --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" output \
+            && git show FETCH_HEAD:data.json > published-data.json \
+            || echo "No published data yet."
+
+      - name: Decide whether to render
+        id: skip
+        run: node scripts/should-render.mjs --fresh=data.json --published=published-data.json --event="$GITHUB_EVENT_NAME"
+
+      - name: Runner diagnostics
+        if: ${{ inputs.probe > 0 }}
+        run: |
+          lscpu | grep -E 'Model name|^CPU\(s\)|Thread|Core|MHz|L3' || true
+          free -m | head -2
+          google-chrome --version
+          which xvfb-run Xvfb || true
+          ls /usr/share/vulkan/icd.d 2>/dev/null || true
+          dpkg -l | awk '/mesa|xvfb|vulkan/ {print $2, $3}' | head -30 || true
+
+      - name: Probe SwiftShader
+        if: ${{ inputs.probe > 0 }}
+        run: node capture-anim.mjs --gl=swiftshader --theme=day --profile=ci --limit="$PROBE" --out=out/probe-swiftshader
+
+      - name: Probe Mesa llvmpipe
+        if: ${{ inputs.probe > 0 }}
+        continue-on-error: true
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb libgl1-mesa-dri libglx-mesa0 libegl-mesa0
+          xvfb-run -a -s "-screen 0 1920x1080x24" node capture-anim.mjs --gl=mesa --theme=day --profile=ci --limit="$PROBE" --out=out/probe-mesa
+
+      - name: Probe lavapipe
+        if: ${{ inputs.probe > 0 }}
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y -qq mesa-vulkan-drivers
+          VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json node capture-anim.mjs --gl=lavapipe --theme=day --profile=ci --limit="$PROBE" --out=out/probe-lavapipe
+
+      - name: Render the banner
+        if: ${{ steps.skip.outputs.render == 'true' && !(inputs.probe > 0) }}
+        run: |
+          args=(--gl=swiftshader --profile=ci --formats=gif --out=out/ci)
+          if [ "${SAMPLES:-0}" != "0" ]; then args+=(--samples="$SAMPLES"); fi
+          node capture-anim.mjs "${args[@]}"
+
+      - name: Build dist
+        if: ${{ steps.skip.outputs.render == 'true' && !(inputs.probe > 0) }}
+        run: node scripts/build-dist.mjs --gifs=out/ci
+
+      - name: Publish the output branch
+        if: ${{ steps.skip.outputs.render == 'true' && !(inputs.probe > 0) }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          asof=$(jq -r .asOf data.json)
+          cd dist
+          git init -q -b output
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Render banner for ${asof}"
+          git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" output
