@@ -1,12 +1,20 @@
 # Renders the profile banner (two looping GIFs of the keyboard animation, drawn by software GL on the runner) and
 # force-pushes it, with the live page and data.json, as the orphan `output` branch that README.md and GitHub Pages read.
+#
+#   prepare   fetch the contribution data, test it, decide whether the banner has to be rendered
+#   render    one runner per theme (day, night): Chrome on Mesa llvmpipe under xvfb draws the frames, sharp encodes the GIF
+#   publish   assemble dist/ and force-push it as the `output` branch
 name: Render banner
 
 on:
   workflow_dispatch:
     inputs:
       probe:
-        description: 'Timing probe: render only this many distinct frames, print timings and stop without publishing (0 = full run)'
+        description: 'Probe: render only this many distinct frames per theme, upload them and stop without publishing (0 = full run)'
+        type: number
+        default: 0
+      from:
+        description: 'Probe only: index of the first distinct frame to render'
         type: number
         default: 0
       samples:
@@ -26,12 +34,11 @@ env:
   OWNER: ${{ github.repository_owner }}
 
 jobs:
-  render:
+  prepare:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    env:
-      PROBE: ${{ inputs.probe }}
-      SAMPLES: ${{ inputs.samples }}
+    timeout-minutes: 15
+    outputs:
+      render: ${{ steps.skip.outputs.render }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -62,48 +69,106 @@ jobs:
         id: skip
         run: node scripts/should-render.mjs --fresh=data.json --published=published-data.json --event="$GITHUB_EVENT_NAME"
 
-      - name: Runner diagnostics
-        if: ${{ inputs.probe > 0 }}
-        run: |
-          lscpu | grep -E 'Model name|^CPU\(s\)|Thread|Core|MHz|L3' || true
-          free -m | head -2
-          google-chrome --version
-          which xvfb-run Xvfb || true
-          ls /usr/share/vulkan/icd.d 2>/dev/null || true
-          dpkg -l | awk '/mesa|xvfb|vulkan/ {print $2, $3}' | head -30 || true
+      - name: Keep the data for the render jobs
+        if: ${{ steps.skip.outputs.render == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: data-json
+          path: data.json
+          retention-days: 1
+          if-no-files-found: error
 
-      - name: Probe SwiftShader
-        if: ${{ inputs.probe > 0 }}
-        run: node capture-anim.mjs --gl=swiftshader --theme=day --profile=ci --limit="$PROBE" --out=out/probe-swiftshader
+  render:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.render == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      matrix:
+        theme: [day, night]
+    env:
+      THEME: ${{ matrix.theme }}
+      PROBE: ${{ inputs.probe }}
+      FROM: ${{ inputs.from }}
+      SAMPLES: ${{ inputs.samples }}
+      LIBGL_ALWAYS_SOFTWARE: '1' # no GPU on the runner: Mesa's llvmpipe, which draws this scene about 5x faster than Chrome's SwiftShader
+      GALLIUM_DRIVER: llvmpipe
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Probe Mesa llvmpipe
-        if: ${{ inputs.probe > 0 }}
-        continue-on-error: true
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq xvfb libgl1-mesa-dri libglx-mesa0 libegl-mesa0
-          xvfb-run -a -s "-screen 0 1920x1080x24" node capture-anim.mjs --gl=mesa --theme=day --profile=ci --limit="$PROBE" --out=out/probe-mesa
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
 
-      - name: Probe lavapipe
-        if: ${{ inputs.probe > 0 }}
-        continue-on-error: true
-        run: |
-          sudo apt-get install -y -qq mesa-vulkan-drivers
-          VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json node capture-anim.mjs --gl=lavapipe --theme=day --profile=ci --limit="$PROBE" --out=out/probe-lavapipe
+      - run: npm ci
 
-      - name: Render the banner
-        if: ${{ steps.skip.outputs.render == 'true' && !(inputs.probe > 0) }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: data-json
+
+      - name: Make sure the software GL stack is installed
         run: |
-          args=(--gl=swiftshader --profile=ci --formats=gif --out=out/ci)
+          if ! command -v xvfb-run >/dev/null || ! dpkg -s libgl1-mesa-dri libglx-mesa0 >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends xvfb libgl1-mesa-dri libglx-mesa0
+          fi
+
+      - name: Render the ${{ matrix.theme }} banner
+        run: |
+          args=(--gl=mesa --theme="$THEME" --profile=ci --formats=gif --out=out/ci)
           if [ "${SAMPLES:-0}" != "0" ]; then args+=(--samples="$SAMPLES"); fi
-          node capture-anim.mjs "${args[@]}"
+          if [ "${PROBE:-0}" != "0" ]; then args+=(--limit="$PROBE" --from="${FROM:-0}"); fi
+          xvfb-run -a -s "-screen 0 1920x1080x24" node capture-anim.mjs "${args[@]}"
+
+      - name: Keep the GIF
+        if: ${{ !(inputs.probe > 0) }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: banner-${{ matrix.theme }}
+          path: out/ci/banner-${{ matrix.theme }}.gif
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Keep the probe frames
+        if: ${{ inputs.probe > 0 }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: probe-frames-${{ matrix.theme }}
+          path: out/ci/frames-${{ matrix.theme }}
+          retention-days: 3
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, render]
+    if: ${{ needs.prepare.outputs.render == 'true' && !(inputs.probe > 0) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: data-json
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: banner-*
+          path: out/ci
+          merge-multiple: true
 
       - name: Build dist
-        if: ${{ steps.skip.outputs.render == 'true' && !(inputs.probe > 0) }}
         run: node scripts/build-dist.mjs --gifs=out/ci
 
       - name: Publish the output branch
-        if: ${{ steps.skip.outputs.render == 'true' && !(inputs.probe > 0) }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |

@@ -8,7 +8,7 @@
 //            --samples=96             accumulation samples per frame (anti-aliasing + soft shadows); multiple of 8
 //            --webp-width=1600  --webp-quality=90  --gif-width=1600  --gif-colours=256  --gif-dither=1  --gif-noise=3  --gif-effort=10
 //            --formats=webp,gif       --frames=N (override the frame count)   --out=dir
-//            --limit=N                render only the first N distinct frames (timing probes); the encode step is skipped
+//            --limit=N  --from=K      render only N distinct frames, starting at the K-th (timing and parity probes); the encode step is skipped
 //            --no-dedupe              render every frame even when its pose is identical to an earlier one
 //            --encode-only            re-encode the frames already in out/_scratch/frames-* without rendering
 //
@@ -22,6 +22,8 @@ import { ROOT, GL_BACKENDS, parseArgs, startServer, launchBrowser, openStill, cp
 
 const args = parseArgs(process.argv.slice(2));
 const GL = GL_BACKENDS.includes(args.gl) ? args.gl : 'gpu';
+// Chrome falls back to another rasteriser without a word when its first choice fails to start; a slow fallback must not go unnoticed.
+const EXPECTED_RENDERER = { swiftshader: /swiftshader/i, mesa: /llvmpipe/i, lavapipe: /llvmpipe/i };
 const THEMES = args.theme === undefined || args.theme === 'both' ? ['day', 'night'] : [args.theme];
 const DELAY = Math.max(10, Math.round(Number(args.delay ?? 60) / 10) * 10);
 const PROFILE = args.profile ?? 'default';
@@ -38,7 +40,7 @@ const ENCODE = {
   gifColours: Number(args['gif-colours'] ?? 256),
   gifDither: Number(args['gif-dither'] ?? 1),
   gifNoise: Number(args['gif-noise'] ?? 3), // peak-to-peak levels of fixed-pattern noise added before GIF quantisation (hides banding)
-  gifEffort: Number(args['gif-effort'] ?? 10),
+  gifEffort: Number(args['gif-effort'] ?? 7), // 7 gives the same palette quality as 10 (0.24 levels apart) in 60 % of the time
 };
 const MB = (bytes) => (bytes / 1048576).toFixed(2);
 const pad = (i) => String(i).padStart(4, '0');
@@ -59,11 +61,13 @@ async function renderFrames(theme, dir) {
       label: `anim/${theme}`,
     });
     const { page, timeline, renderer, stats } = first;
+    if (EXPECTED_RENDERER[GL] && !EXPECTED_RENDERER[GL].test(renderer)) throw new Error(`--gl=${GL} expects a renderer matching ${EXPECTED_RENDERER[GL]}, but Chrome picked: ${renderer}`);
     const frames = Number(args.frames ?? Math.round((timeline.loop * 1000) / DELAY));
     const times = Array.from({ length: frames }, (_, i) => (i * timeline.loop) / frames);
     const poseKeys = await page.evaluate((ts) => ts.map((t) => window.__poseKeyAt(t)), times);
     const { source, unique } = planFrames(poseKeys, !args['no-dedupe']);
-    const todo = args.limit === undefined ? unique : unique.slice(0, Number(args.limit));
+    const from = Number(args.from ?? 0);
+    const todo = args.limit === undefined ? unique.slice(from) : unique.slice(from, from + Number(args.limit));
     log(`[${theme}] loop ${timeline.loop.toFixed(3)} s, ${timeline.keys} keys pressed, ${frames} frames x ${DELAY} ms (${unique.length} distinct, rendering ${todo.length}), ${stats.samples} samples, profile ${PROFILE}, GL: ${renderer}`);
 
     const renderMs = [];
@@ -187,7 +191,7 @@ async function main() {
     const total = meta.renderMs.reduce((s, v) => s + v, 0);
     const cpu = (meta.cpuSeconds ?? []).reduce((sum, v) => sum + v, 0);
     log(`[${theme}] ${meta.rendered.length} frames rendered in ${seconds(total)}s (${seconds(total / meta.rendered.length)}s/frame, ${(cpu / meta.rendered.length).toFixed(1)} cpu-s/frame), wall ${seconds(meta.wallMs)}s`);
-    if (args.limit !== undefined) continue;
+    if (args.limit !== undefined || args.from !== undefined) continue; // a partial set cannot be encoded
     const files = await encode(theme, dir, meta);
     summary.push({ theme, meta, files });
   }
